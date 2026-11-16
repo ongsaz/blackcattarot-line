@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>เลือกไพ่ – Black Cat Tarot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#15101f; --bg2:#221832; --gold:#d9b25f; --gold-soft:#d9b25f55;
+    --text:#f3ead8; --muted:#b8a98c;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:"Kanit",system-ui,sans-serif;font-weight:300}
+  body{min-height:100vh;background:radial-gradient(ellipse at top,#2c1f44 0%,var(--bg) 60%) fixed}
+  .wrap{max-width:560px;margin:0 auto;padding:16px 16px calc(120px + env(safe-area-inset-bottom))}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+  header img{width:52px;height:52px}
+  h1{font-size:18px;font-weight:600;margin:0;color:var(--gold);letter-spacing:.3px}
+  .hint{font-size:14px;color:var(--muted);margin:2px 0 0}
+
+  .sticky{position:sticky;top:0;z-index:5;background:var(--bg);margin:0 -16px;padding:8px 16px 10px;box-shadow:0 8px 12px -8px #000a}
+  .slots{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 auto 8px;max-width:330px}
+  .slot{text-align:center}
+  .slot .frame{aspect-ratio:410/612;border:1.5px dashed var(--gold-soft);border-radius:8px;position:relative;perspective:800px}
+  .slot .label{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.3}
+  .slot .num{position:absolute;inset:0;display:grid;place-items:center;color:var(--gold-soft);font-size:22px;font-weight:600}
+  .flip{position:absolute;inset:0;transform-style:preserve-3d;transition:transform .8s cubic-bezier(.3,.7,.3,1)}
+  .flip.open{transform:rotateY(180deg)}
+  .flip img{position:absolute;inset:0;width:100%;height:100%;border-radius:7px;backface-visibility:hidden;-webkit-backface-visibility:hidden;object-fit:cover}
+  .flip .face{transform:rotateY(180deg)}
+  .slot .name{font-size:11px;color:var(--gold);min-height:15px;margin-top:2px}
+
+  .deckbar{display:flex;justify-content:space-between;align-items:center}
+  .deckbar span{font-size:14px;color:var(--muted)}
+  .deck{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-top:12px}
+  @media (min-width:480px){.deck{grid-template-columns:repeat(9,1fr)}}
+  .card{aspect-ratio:410/612;border-radius:5px;background:url(../cards/back.jpg) center/cover;box-shadow:0 2px 6px #0008;
+        border:none;padding:0;cursor:pointer;transition:transform .15s,opacity .3s;animation:deal .4s backwards}
+  .card:active{transform:translateY(-4px) scale(1.04)}
+  .card.taken{opacity:0;pointer-events:none;transform:scale(.8)}
+  @keyframes deal{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:none}}
+  .deck.locked .card{pointer-events:none;opacity:.35}
+
+  .btn{font:inherit;font-weight:400;border-radius:999px;border:1px solid var(--gold);background:transparent;color:var(--gold);padding:6px 14px;font-size:14px;cursor:pointer}
+  .bar{position:fixed;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+       background:linear-gradient(transparent,var(--bg) 35%)}
+  .main{display:block;width:100%;max-width:528px;margin:0 auto;font:inherit;font-size:17px;font-weight:600;padding:14px;border:none;border-radius:14px;
+        background:var(--gold);color:#22180e;cursor:pointer;box-shadow:0 6px 18px #d9b25f40}
+  .main:disabled{background:#4a3e5c;color:#9a8fac;box-shadow:none}
+  .toast{margin:12px auto 0;max-width:528px;font-size:14px;color:var(--muted);white-space:pre-line;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="../logo.png" alt="">
+    <div>
+      <h1>ตั้งจิตถึงคำถามของคุณ</h1>
+      <p class="hint">แล้วแตะเลือกไพ่ 4 ใบที่ใจรู้สึกดึงดูดเหมียว 🐾</p>
+    </div>
+  </header>
+
+  <div class="sticky">
+    <div class="slots" id="slots"></div>
+    <div class="deckbar">
+      <span id="count">เลือกแล้ว 0/4</span>
+      <button class="btn" id="shuffle">สับไพ่ใหม่</button>
+    </div>
+  </div>
+  <div class="deck" id="deck"></div>
+  <p class="toast" id="toast"></p>
+</div>
+
+<div class="bar"><button class="main" id="action" disabled>เลือกไพ่อีก 4 ใบ</button></div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+// ===== ตั้งค่า: ใส่ LIFF ID ที่ได้จาก LINE Developers Console =====
+const LIFF_ID = 'PUT_YOUR_LIFF_ID_HERE';
+// ===================================================================
+
+const POSITIONS = ['สถานการณ์ตอนนี้', 'อุปสรรคหรือสิ่งที่ซ่อนอยู่', 'คำแนะนำ', 'แนวโน้มผลลัพธ์'];
+const MESSAGE_PREFIX = '🔮 ไพ่ที่ฉันเลือก';
+
+// รายชื่อไพ่ 78 ใบ ตรงกับชื่อไฟล์ใน cards/
+const MAJORS = ['The Fool','The Magician','The High Priestess','The Empress','The Emperor','The Hierophant',
+  'The Lovers','The Chariot','Strength','The Hermit','Wheel of Fortune','Justice','The Hanged Man','Death',
+  'Temperance','The Devil','The Tower','The Star','The Moon','The Sun','Judgement','The World'];
+const SUITS = {cups:'Cups', pent:'Pentacles', swords:'Swords', wands:'Wands'};
+const RANKS = ['Ace','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Page','Knight','Queen','King'];
+const CARDS = [];
+MAJORS.forEach((n, i) => CARDS.push({id: 'maj_' + String(i).padStart(2, '0'), name: n}));
+Object.entries(SUITS).forEach(([k, s]) => RANKS.forEach((r, i) =>
+  CARDS.push({id: k + '_' + String(i + 1).padStart(2, '0'), name: r + ' of ' + s})));
+
+const $ = id => document.getElementById(id);
+let picked = [], revealed = false, testMode = false;
+
+function shuffle(a) {
+  a = a.slice();
+  const r = new Uint32Array(a.length);
+  crypto.getRandomValues(r);
+  for (let i = a.length - 1; i > 0; i--) { const j = r[i] % (i + 1); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+function renderSlots() {
+  $('slots').innerHTML = POSITIONS.map((p, i) => {
+    const c = picked[i];
+    return `<div class="slot" data-i="${i}"><div class="frame">${c
+      ? `<div class="flip ${revealed ? 'open' : ''}"><img src="../cards/back.jpg" alt=""><img class="face" src="../cards/${c.id}.jpg" alt="${c.name}"></div>`
+      : `<div class="num">${i + 1}</div>`}</div>
+      <div class="name">${revealed && c ? c.name : ''}</div><div class="label">${p}</div></div>`;
+  }).join('');
+}
+
+function renderDeck() {
+  const deck = shuffle(CARDS);
+  $('deck').innerHTML = deck.map((c, i) =>
+    `<button class="card" data-id="${c.id}" style="animation-delay:${Math.min(i * 8, 500)}ms" aria-label="ไพ่ใบที่ ${i + 1}"></button>`).join('');
+}
+
+function update() {
+  $('count').textContent = `เลือกแล้ว ${picked.length}/4`;
+  $('deck').classList.toggle('locked', picked.length >= 4);
+  const btn = $('action');
+  if (picked.length < 4) { btn.disabled = true; btn.textContent = `เลือกไพ่อีก ${4 - picked.length} ใบ`; }
+  else if (!revealed) { btn.disabled = false; btn.textContent = 'เปิดไพ่ ✨'; }
+  else { btn.disabled = false; btn.textContent = 'ส่งให้แม่หมอเหมียวทำนาย 🐾'; }
+  $('shuffle').style.visibility = revealed ? 'hidden' : 'visible';
+  renderSlots();
+}
+
+$('deck').addEventListener('click', e => {
+  const el = e.target.closest('.card');
+  if (!el || picked.length >= 4 || revealed) return;
+  picked.push(CARDS.find(c => c.id === el.dataset.id));
+  el.classList.add('taken');
+  if (navigator.vibrate) navigator.vibrate(15);
+  update();
+});
+
+// แตะไพ่ในช่องเพื่อคืนไพ่ (ก่อนเปิดไพ่เท่านั้น)
+$('slots').addEventListener('click', e => {
+  const slot = e.target.closest('.slot');
+  if (!slot || revealed) return;
+  const c = picked[+slot.dataset.i];
+  if (!c) return;
+  picked.splice(+slot.dataset.i, 1);
+  const el = document.querySelector(`.card[data-id="${c.id}"]`);
+  if (el) el.classList.remove('taken');
+  update();
+});
+
+$('shuffle').addEventListener('click', () => { picked = []; renderDeck(); update(); });
+
+$('action').addEventListener('click', async () => {
+  if (picked.length < 4) return;
+  if (!revealed) {
+    picked.forEach(c => { new Image().src = `../cards/${c.id}.jpg`; });
+    revealed = true; update();
+    window.scrollTo({top: 0, behavior: 'smooth'});
+    return;
+  }
+  const text = MESSAGE_PREFIX + '\n' + picked.map((c, i) => `${i + 1}. ${c.name}`).join('\n');
+  const btn = $('action');
+  btn.disabled = true; btn.textContent = 'กำลังส่ง...';
+  if (testMode) {
+    $('toast').textContent = '(โหมดทดสอบ) ข้อความที่จะส่งเข้าแชต:\n' + text;
+    btn.disabled = false; btn.textContent = 'ส่งให้แม่หมอเหมียวทำนาย 🐾';
+    return;
+  }
+  try {
+    await liff.sendMessages([{type: 'text', text}]);
+    liff.closeWindow();
+  } catch (err) {
+    $('toast').textContent = 'ส่งไม่สำเร็จเหมียว 😿 กรุณาเปิดหน้านี้จากปุ่มในแชต LINE แล้วลองใหม่\n(' + (err.message || err) + ')';
+    btn.disabled = false; btn.textContent = 'ลองส่งอีกครั้ง';
+  }
+});
+
+(async function init() {
+  renderDeck(); update();
+  testMode = new URLSearchParams(location.search).has('test') || LIFF_ID.startsWith('PUT_');
+  if (testMode) { $('toast').textContent = 'โหมดทดสอบ: เปิดนอก LINE จะยังไม่ส่งข้อความจริง'; return; }
+  try {
+    await liff.init({liffId: LIFF_ID});
+    if (!liff.isInClient()) $('toast').textContent = 'กรุณาเปิดหน้านี้จากปุ่มในแชต LINE เหมียว';
+  } catch (err) {
+    $('toast').textContent = 'เชื่อมต่อ LINE ไม่สำเร็จ: ' + (err.message || err);
+  }
+})();
+</script>
+</body>
+</html>
