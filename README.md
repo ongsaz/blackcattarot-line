@@ -77,7 +77,7 @@
    | `GEMINI_API_KEY` | key จากขั้นที่ 3 |
    | `IMAGE_BASE_URL` | `https://USERNAME.github.io/blackcattarot-line/cards/` |
    | `LIFF_URL` | ใส่ทีหลังในขั้นที่ 7 |
-   | `GEMINI_MODEL` | (ไม่บังคับ) ค่าเริ่มต้น `gemini-2.5-flash` |
+   | `GEMINI_MODEL` | (ไม่บังคับ) ค่าเริ่มต้น `gemini-3.8-flash` |
 
 4. เลือกฟังก์ชัน `setup` แล้วกด **Run** → อนุญาตสิทธิ์ (ขึ้นเตือน "Google hasn't verified this app" ให้กด Advanced → Go to ... เพราะเป็นสคริปต์ของคุณเอง)
    - ต้องเห็นใน log ว่า `daily: พบ 78/78 ใบ` และมีแท็บ `users`, `readings` เพิ่มขึ้นมา

@@ -10,11 +10,15 @@
  *  LINE_CHANNEL_ACCESS_TOKEN  Token จาก LINE Developers (Messaging API)
  *  GEMINI_API_KEY             API key จาก Google AI Studio
  *  GEMINI_MODEL               (ไม่บังคับ) ชื่อโมเดล ค่าเริ่มต้นดูที่ DEFAULT_MODEL
+ *  GEMINI_FALLBACK_MODEL      (ไม่บังคับ) รุ่นสำรอง ใช้เมื่อรุ่นหลักไม่ว่าง (503/429)
+ *    ใส่ชื่อรุ่น "mock" = โหมดทดสอบฟรี ไม่เรียก AI (ประกอบคำทำนายจากแท็บ daily)
+ *    รุ่น gemma-... ใช้ได้ฟรีและแยกคิวจาก Gemini
+ *  GEMINI_THINKING_LEVEL      (ไม่บังคับ) minimal / low / medium / high / off  ค่าเริ่มต้น low (ยิ่งต่ำยิ่งตอบเร็ว)
  *  LIFF_URL                   เช่น https://liff.line.me/1234567890-AbCdEfGh
  *  IMAGE_BASE_URL             เช่น https://USERNAME.github.io/blackcattarot-line/cards/
  */
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3.8-flash';
 const TZ = 'Asia/Bangkok';
 const FREE_CREDITS_FOR_NEW_FRIEND = 1;
 const MAX_QUESTION_LENGTH = 300;
@@ -59,11 +63,18 @@ function doGet() {
 function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
+    debugLog('webhook', (body.events || []).length + ' event: ' + (body.events || []).map(function (ev) {
+      return ev.type + (ev.message ? '/' + ev.message.type + (ev.message.text ? ' "' + ev.message.text.slice(0, 30) + '"' : '') : '');
+    }).join(', '));
     (body.events || []).forEach(function (ev) {
-      try { handleEvent(ev); } catch (err) { console.error('event error', err && err.stack || err); }
+      try { handleEvent(ev); } catch (err) {
+        console.error('event error', err && err.stack || err);
+        debugLog('event error', String(err && err.stack || err));
+      }
     });
   } catch (err) {
     console.error('doPost error', err && err.stack || err);
+    debugLog('doPost error', String(err && err.stack || err));
   }
   return ContentService.createTextOutput('OK');
 }
@@ -183,6 +194,7 @@ function onCardsChosen(replyToken, userId, msg) {
   }
 
   const meta = loadDailyMeta();
+  showLoading(userId, 60); // ขึ้นจุดๆ "กำลังพิมพ์" ในแชตระหว่างรอ AI
   const result = askGemini(user.question, cards, meta);
 
   if (!result.ok) {
@@ -260,6 +272,7 @@ const SYSTEM_PROMPT = [
   'บุคลิกและน้ำเสียง:',
   '- อบอุ่น เป็นกันเอง ขี้เล่นนิดๆ แทนผู้ถามว่า "คุณ"',
   '- ลงท้ายประโยคด้วย "เหมียว" ประมาณ 4-6 ครั้งทั้งคำทำนาย อย่าใส่ทุกประโยค',
+  '- ไม่ใช้คำลงท้าย ค่ะ คะ ครับ ให้ใช้ "เหมียว" หรือ "นะ" แทน',
   '- ไม่ฟันธงแบบทำให้กลัว ไพ่ที่ดูน่ากลัวให้ตีความเป็นบทเรียนหรือการเปลี่ยนแปลง แต่ยังซื่อตรงกับความหมายของไพ่',
   '',
   'ไพ่ 4 ใบมีตำแหน่งดังนี้: 1) สถานการณ์ตอนนี้ 2) อุปสรรคหรือสิ่งที่ซ่อนอยู่ 3) คำแนะนำ 4) แนวโน้มผลลัพธ์',
@@ -267,7 +280,7 @@ const SYSTEM_PROMPT = [
   '',
   'รูปแบบคำตอบ (ข้อความธรรมดา ห้ามใช้ Markdown เช่น ** หรือ #):',
   '- เปิดด้วย 1 ประโยคทักทายที่อ้างถึงคำถาม',
-  '- แต่ละใบขึ้นบรรทัดใหม่ด้วย 1️⃣ 2️⃣ 3️⃣ 4️⃣ ตามด้วยชื่อไพ่ภาษาไทย แล้วตีความ 2-3 ประโยคให้โยงกับคำถาม',
+  '- แต่ละใบขึ้นบรรทัดใหม่ด้วย 1️⃣ 2️⃣ 3️⃣ 4️⃣ ตามด้วยชื่อไพ่ภาษาไทยในวงเล็บชื่ออังกฤษ แล้วตีความ 2-3 ประโยคให้โยงกับคำถาม',
   '- ปิดด้วย "🐾 สรุปจากเหมียว:" 2-3 ประโยค เชื่อมไพ่ทั้ง 4 ใบเข้าด้วยกันพร้อมคำแนะนำที่ทำได้จริง',
   '- ความยาวรวมประมาณ 900-1,400 ตัวอักษร',
   '',
@@ -286,43 +299,85 @@ const SYSTEM_PROMPT = [
 function askGemini(question, cards, meta) {
   const props = PropertiesService.getScriptProperties();
   const key = props.getProperty('GEMINI_API_KEY');
-  const model = props.getProperty('GEMINI_MODEL') || DEFAULT_MODEL;
-  if (!key) { console.error('GEMINI_API_KEY is missing'); return { ok: false }; }
+  const models = [props.getProperty('GEMINI_MODEL') || DEFAULT_MODEL, props.getProperty('GEMINI_FALLBACK_MODEL')]
+    .filter(function (m, i, arr) { return m && arr.indexOf(m) === i; });
+  if (!key && models[0] !== 'mock') { console.error('GEMINI_API_KEY is missing'); return { ok: false }; }
 
   const cardLines = cards.map(function (c, i) {
     const th = meta[c.id] && meta[c.id].th ? ' (' + meta[c.id].th + ')' : '';
     return (i + 1) + ') ' + POSITIONS[i] + ': ' + c.name + th;
   }).join('\n');
   const userPrompt = 'คำถามของผู้ถาม:\n"""' + question + '"""\n\nไพ่ที่ผู้ถามเลือก:\n' + cardLines;
-
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent';
-  const payload = {
+  const thinking = (props.getProperty('GEMINI_THINKING_LEVEL') || 'low').toLowerCase();
+  const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
     contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
     generationConfig: { temperature: 0.9, maxOutputTokens: 4096 },
   };
+  if (thinking !== 'off') body.generationConfig.thinkingConfig = { thinkingLevel: thinking };
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = UrlFetchApp.fetch(url, {
-      method: 'post', contentType: 'application/json',
-      headers: { 'x-goog-api-key': key },
-      payload: JSON.stringify(payload), muteHttpExceptions: true,
-    });
-    const code = res.getResponseCode();
-    if (code === 200) {
-      const data = JSON.parse(res.getContentText());
-      const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
-      let out = parts.filter(function (p) { return !p.thought; }).map(function (p) { return p.text || ''; }).join('').trim();
-      if (!out) { console.error('Gemini empty response', res.getContentText().slice(0, 1000)); return { ok: false }; }
-      out = out.replace(/\*\*/g, '').replace(/^#+\s*/gm, '');
-      if (out.indexOf('[[CRISIS]]') !== -1) return { ok: true, crisis: true, text: out.replace('[[CRISIS]]', '').trim() };
-      return { ok: true, text: out };
-    }
-    console.error('Gemini error ' + code, res.getContentText().slice(0, 1000));
-    if (code !== 429 && code < 500) break;
-    Utilities.sleep(1500);
+  // รุ่นหลักลอง 3 ครั้ง (รอ 1, 2 วินาที) ถ้ายังไม่ว่างค่อยสลับไปรุ่นสำรอง 2 ครั้ง
+  for (let mi = 0; mi < models.length; mi++) {
+    if (models[mi] === 'mock') return mockReading(question, cards, meta);
+    const isGemma = /^gemma/i.test(models[mi]);
+    // Gemma ไม่รองรับ systemInstruction และการตั้งระดับการคิด
+    const req = isGemma ? {
+      contents: [{ role: 'user', parts: [{ text: SYSTEM_PROMPT + '\n\n---\n\n' + userPrompt }] }],
+      generationConfig: { temperature: 0.9, maxOutputTokens: 4096 },
+    } : body;
+    const result = callGeminiModel(models[mi], req, key, mi === 0 ? 3 : 2);
+    if (result) return result;
   }
   return { ok: false };
+}
+
+/** เรียก Gemini รุ่นเดียว ลองซ้ำได้ tries ครั้งถ้าเจอ 429/5xx คืนค่า null ถ้าไม่สำเร็จ */
+function callGeminiModel(model, body, key, tries) {
+  const models = [model];
+  for (let mi = 0; mi < models.length; mi++) {
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(models[mi]) + ':generateContent';
+    for (let attempt = 0; attempt < tries; attempt++) {
+      const t0 = Date.now();
+      const res = UrlFetchApp.fetch(url, {
+        method: 'post', contentType: 'application/json',
+        headers: { 'x-goog-api-key': key }, payload: JSON.stringify(body), muteHttpExceptions: true,
+      });
+      const code = res.getResponseCode();
+      console.log('Gemini ' + models[mi] + ' → ' + code + ' ใน ' + ((Date.now() - t0) / 1000).toFixed(1) + ' วินาที');
+      if (code === 400 && body.generationConfig.thinkingConfig && /thinking/i.test(res.getContentText())) {
+        // รุ่นนี้ไม่รองรับการตั้งระดับการคิด → ตัดออกแล้วลองใหม่ทันที
+        console.log('รุ่นนี้ไม่รองรับ thinkingLevel ตัดออกแล้วลองใหม่');
+        delete body.generationConfig.thinkingConfig; attempt--; continue;
+      }
+      if (code === 200) {
+        const data = JSON.parse(res.getContentText());
+        const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+        let out = parts.filter(function (p) { return !p.thought; }).map(function (p) { return p.text || ''; }).join('').trim();
+        if (!out) { console.error('Gemini empty response (' + models[mi] + ')', res.getContentText().slice(0, 1000)); return null; }
+        out = out.replace(/\*\*/g, '').replace(/^#+\s*/gm, '');
+        if (out.indexOf('[[CRISIS]]') !== -1) return { ok: true, crisis: true, text: out.replace('[[CRISIS]]', '').trim() };
+        return { ok: true, text: out, model: models[mi] };
+      }
+      console.error('Gemini error ' + code + ' (' + models[mi] + ')', res.getContentText().slice(0, 1000));
+      if (code !== 429 && code < 500) return null; // error ที่ลองซ้ำไม่หาย เช่น key ผิด ชื่อรุ่นผิด
+      if (attempt < tries - 1) Utilities.sleep(1000 * (attempt + 1));
+    }
+  }
+  return null;
+}
+
+/** โหมดทดสอบ: ประกอบคำทำนายจากแท็บ daily โดยไม่เรียก AI */
+function mockReading(question, cards, meta) {
+  const nums = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+  const lines = ['(โหมดทดสอบ: ยังไม่ได้ใช้ AI) คำถามของคุณคือ "' + question + '" เหมียวเปิดไพ่ให้แล้วนะ', ''];
+  cards.forEach(function (c, i) {
+    const m = meta[c.id] || {};
+    lines.push(nums[i] + ' ' + POSITIONS[i] + ': ' + (m.th || c.name));
+    lines.push(String(m.meaning || '').replace(/^วันนี้/, ''), '');
+  });
+  const advice = meta[cards[2].id] && meta[cards[2].id].advice;
+  lines.push('🐾 สรุปจากเหมียว: ' + (advice || 'ค่อยๆ ไปทีละก้าวนะเหมียว'));
+  return { ok: true, text: lines.join('\n'), model: 'mock' };
 }
 
 // ==================================================================
@@ -338,6 +393,27 @@ function reply(replyToken, messages) {
     muteHttpExceptions: true,
   });
   if (res.getResponseCode() !== 200) console.error('LINE reply error', res.getResponseCode(), res.getContentText());
+  debugLog('reply → ' + res.getResponseCode(), res.getResponseCode() === 200 ? 'ส่งสำเร็จ ' + messages.length + ' ข้อความ' : res.getContentText().slice(0, 500));
+}
+
+/** บันทึกลงแท็บ log (สร้างให้เอง) ดูง่ายกว่าหน้า Executions เก็บล่าสุด 300 แถว */
+function debugLog(what, detail) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sh = ss.getSheetByName('log');
+    if (!sh) { sh = ss.insertSheet('log'); sh.appendRow(['time', 'what', 'detail']); sh.setFrozenRows(1); }
+    sh.appendRow([new Date(), what, detail || '']);
+    if (sh.getLastRow() > 400) sh.deleteRows(2, sh.getLastRow() - 301);
+  } catch (err) { console.error('debugLog failed', err); }
+}
+
+/** แสดงแอนิเมชันกำลังพิมพ์ในแชต 1:1 (ฟรี ไม่นับโควตา) */
+function showLoading(userId, seconds) {
+  const token = PropertiesService.getScriptProperties().getProperty('LINE_CHANNEL_ACCESS_TOKEN');
+  UrlFetchApp.fetch('https://api.line.me/v2/bot/chat/loading/start', {
+    method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify({ chatId: userId, loadingSeconds: seconds }), muteHttpExceptions: true,
+  });
 }
 
 function text(t, quickReply) {
@@ -551,6 +627,19 @@ function testGemini() {
   const cards = ['maj_00', 'swords_03', 'cups_11', 'maj_17'].map(function (id) {
     return CARD_LIST.filter(function (c) { return c.id === id; })[0];
   });
+  const t0 = Date.now();
   const r = askGemini('งานใหม่ที่กำลังจะเริ่มเดือนหน้าจะไปได้ดีไหม', cards, loadDailyMeta());
-  console.log(JSON.stringify(r, null, 2));
+  console.log('รวมทั้งหมด ' + ((Date.now() - t0) / 1000).toFixed(1) + ' วินาที | รุ่นที่ตอบ: ' + (r.model || '-') + ' | ยาว ' + (r.text || '').length + ' ตัวอักษร');
+  console.log(r.text || JSON.stringify(r));
+}
+
+/** แสดงรายชื่อรุ่น Gemini ที่ key นี้ใช้ได้ (สำหรับเลือก GEMINI_MODEL / GEMINI_FALLBACK_MODEL) */
+function listGeminiModels() {
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',
+    { headers: { 'x-goog-api-key': key }, muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) return console.error(res.getResponseCode(), res.getContentText());
+  (JSON.parse(res.getContentText()).models || [])
+    .filter(function (m) { return (m.supportedGenerationMethods || []).indexOf('generateContent') !== -1; })
+    .forEach(function (m) { console.log(m.name.replace('models/', '') + '  —  ' + (m.displayName || '')); });
 }
