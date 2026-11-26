@@ -42,6 +42,19 @@
   .card.taken{opacity:0;pointer-events:none;transform:scale(.8)}
   @keyframes deal{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:none}}
   .deck.locked .card{pointer-events:none;opacity:.35}
+  .deck.hide{visibility:hidden}
+  .deck.js .card{animation:none}
+
+  /* เอฟเฟกต์สับไพ่ */
+  .stage{position:fixed;inset:0;z-index:20;display:none;pointer-events:none}
+  .stage.on{display:block}
+  .stage .glow{position:absolute;left:50%;top:56%;width:340px;height:340px;margin:-170px 0 0 -170px;border-radius:50%;
+               background:radial-gradient(circle,#d9b25f33 0%,#7a4fc022 40%,transparent 70%);opacity:0}
+  .stage .ring{position:absolute;left:50%;top:56%;width:0;height:0}
+  .stage .sc{position:absolute;width:60px;aspect-ratio:410/612;left:-30px;top:-45px;border-radius:6px;
+             background:url(../cards/back.jpg) center/cover;box-shadow:0 6px 16px #000b;border:1px solid #d9b25f66}
+  .stage .msg{position:absolute;left:0;right:0;top:calc(56% + 170px);text-align:center;color:var(--gold);font-size:16px;opacity:0}
+  .btn:disabled{opacity:.4}
 
   .btn{font:inherit;font-weight:400;border-radius:999px;border:1px solid var(--gold);background:transparent;color:var(--gold);padding:6px 14px;font-size:14px;cursor:pointer}
   .bar{position:fixed;left:0;right:0;bottom:0;padding:12px 16px calc(12px + env(safe-area-inset-bottom));
@@ -66,7 +79,7 @@
     <div class="slots" id="slots"></div>
     <div class="deckbar">
       <span id="count">เลือกแล้ว 0/4</span>
-      <button class="btn" id="shuffle">สับไพ่ใหม่</button>
+      <button class="btn" id="shuffle">🔄 สับไพ่</button>
     </div>
   </div>
   <div class="deck" id="deck"></div>
@@ -74,6 +87,7 @@
 </div>
 
 <div class="bar"><button class="main" id="action" disabled>เลือกไพ่อีก 4 ใบ</button></div>
+<div class="stage" id="stage"><div class="glow"></div><div class="ring"></div><div class="msg">กำลังสับไพ่...เหมียว 🐾</div></div>
 
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 <script>
@@ -96,7 +110,7 @@ Object.entries(SUITS).forEach(([k, s]) => RANKS.forEach((r, i) =>
   CARDS.push({id: k + '_' + String(i + 1).padStart(2, '0'), name: r + ' of ' + s})));
 
 const $ = id => document.getElementById(id);
-let picked = [], revealed = false, testMode = false;
+let picked = [], revealed = false, testMode = false, busy = false;
 
 function shuffle(a) {
   a = a.slice();
@@ -122,6 +136,85 @@ function renderDeck() {
     `<button class="card" data-id="${c.id}" style="animation-delay:${Math.min(i * 8, 500)}ms" aria-label="ไพ่ใบที่ ${i + 1}"></button>`).join('');
 }
 
+// ---------- เอฟเฟกต์สับไพ่: รวมกอง → กางเป็นวง → หมุนวน → รวบกอง → สับ → แจกไพ่ ----------
+const anim = (el, frames, opt) => el.animate(frames, Object.assign({fill: 'forwards'}, opt)).finished;
+const all = (els, fn) => Promise.all(els.map(fn));
+
+async function shuffleWithEffect() {
+  if (busy || revealed) return;
+  busy = true;
+  picked = []; update();
+  $('shuffle').disabled = true;
+  const deck = $('deck');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) { renderDeck(); deck.classList.remove('js', 'hide'); busy = false; $('shuffle').disabled = false; return; }
+
+  window.scrollTo({top: 0, behavior: 'smooth'});
+  deck.classList.add('hide');
+  const stage = $('stage'), ring = stage.querySelector('.ring'), glow = stage.querySelector('.glow'), msg = stage.querySelector('.msg');
+  const N = 18, R = Math.min(window.innerWidth * 0.3, 125);
+  ring.innerHTML = Array.from({length: N}, () => '<div class="sc"></div>').join('');
+  const sc = [...ring.children];
+  const jitter = () => (Math.random() * 10 - 5).toFixed(1);
+  stage.classList.add('on');
+  ring.getAnimations().forEach(a => a.cancel());
+
+  try {
+    // 1) ไพ่รวมเป็นกองกลางจอ
+    anim(glow, [{opacity: 0}, {opacity: 1}], {duration: 400});
+    anim(msg, [{opacity: 0}, {opacity: 1}], {duration: 400});
+    await all(sc, (el, i) => anim(el,
+      [{opacity: 0, transform: `translateY(40px) scale(.6) rotate(${jitter()}deg)`},
+       {opacity: 1, transform: `translateY(${-i * 0.6}px) rotate(${jitter()}deg)`}],
+      {duration: 260, delay: i * 12, easing: 'ease-out'}));
+
+    // 2) กางออกเป็นวงกลม
+    await all(sc, (el, i) => anim(el,
+      [{transform: `translateY(${-i * 0.6}px) rotate(0deg)`},
+       {transform: `rotate(${360 * i / N}deg) translateY(${-R}px)`}],
+      {duration: 550, easing: 'cubic-bezier(.2,.8,.2,1)'}));
+
+    // 3) หมุนวน
+    if (navigator.vibrate) navigator.vibrate([20, 60, 20, 60, 20]);
+    await anim(ring, [{transform: 'rotate(0deg)'}, {transform: 'rotate(720deg)'}],
+      {duration: 1200, easing: 'cubic-bezier(.45,0,.2,1)'});
+
+    // 4) รวบกลับเป็นกอง
+    await all(sc, (el, i) => anim(el,
+      [{transform: `rotate(${360 * i / N}deg) translateY(${-R}px)`},
+       {transform: `rotate(${720 + Number(jitter())}deg) translateY(0)`}],
+      {duration: 380, easing: 'ease-in'}));
+
+    // 5) สับแบบแยกกองซ้ายขวาแล้วรวม 2 รอบ
+    for (let k = 0; k < 2; k++) {
+      await all(sc, (el, i) => anim(el,
+        [{transform: 'rotate(0deg) translate(0,0)'},
+         {transform: `rotate(${i % 2 ? 8 : -8}deg) translate(${i % 2 ? 46 : -46}px, ${-i * 0.5}px)`},
+         {transform: `rotate(${jitter()}deg) translate(0, ${-i * 0.6}px)`}],
+        {duration: 360, delay: (i % 2 ? i : N - i) * 6, easing: 'ease-in-out'}));
+    }
+    anim(glow, [{opacity: 1}, {opacity: 0}], {duration: 300});
+    anim(msg, [{opacity: 1}, {opacity: 0}], {duration: 200});
+  } catch (e) { /* ข้ามเอฟเฟกต์ถ้าเบราว์เซอร์ไม่รองรับ */ }
+
+  // 6) แจกไพ่จากกองกลางจอลงตาราง
+  const ringBox = ring.getBoundingClientRect();
+  stage.classList.remove('on');
+  renderDeck();
+  deck.classList.add('js');
+  deck.classList.remove('hide');
+  const cards = [...deck.children];
+  cards.forEach((el, i) => {
+    const b = el.getBoundingClientRect();
+    const dx = ringBox.left - (b.left + b.width / 2), dy = ringBox.top - (b.top + b.height / 2);
+    el.animate([{transform: `translate(${dx}px, ${dy}px) scale(.6) rotate(${jitter()}deg)`, opacity: 0},
+                {opacity: 1, offset: 0.15},
+                {transform: 'none', opacity: 1}],
+      {duration: 420, delay: Math.min(i * 9, 650), easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards'});
+  });
+  setTimeout(() => { busy = false; $('shuffle').disabled = false; update(); }, 750);
+}
+
 function update() {
   $('count').textContent = `เลือกแล้ว ${picked.length}/4`;
   $('deck').classList.toggle('locked', picked.length >= 4);
@@ -135,7 +228,7 @@ function update() {
 
 $('deck').addEventListener('click', e => {
   const el = e.target.closest('.card');
-  if (!el || picked.length >= 4 || revealed) return;
+  if (!el || busy || picked.length >= 4 || revealed) return;
   picked.push(CARDS.find(c => c.id === el.dataset.id));
   el.classList.add('taken');
   if (navigator.vibrate) navigator.vibrate(15);
@@ -154,7 +247,7 @@ $('slots').addEventListener('click', e => {
   update();
 });
 
-$('shuffle').addEventListener('click', () => { picked = []; renderDeck(); update(); });
+$('shuffle').addEventListener('click', shuffleWithEffect);
 
 $('action').addEventListener('click', async () => {
   if (picked.length < 4) return;
@@ -182,7 +275,8 @@ $('action').addEventListener('click', async () => {
 });
 
 (async function init() {
-  renderDeck(); update();
+  update();
+  shuffleWithEffect();
   testMode = new URLSearchParams(location.search).has('test') || LIFF_ID.startsWith('PUT_');
   if (testMode) { $('toast').textContent = 'โหมดทดสอบ: เปิดนอก LINE จะยังไม่ส่งข้อความจริง'; return; }
   try {
